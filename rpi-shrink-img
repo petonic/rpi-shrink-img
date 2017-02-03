@@ -1,0 +1,46 @@
+#!/bin/bash
+#
+# This utility takes one parameter, which is the name of a .iso disk image
+# with a Raspian partition layout (#1=VFAT, #2=ext4).  It resizes the
+# #2 partition to a minimal size, so that the output .ISO is easier to copy
+# and store.
+#
+#
+# Snarfed from
+# http://blog.osnz.co.nz/post/97106494057/shrinking-raspberry-pi-sd-card-images-for
+#
+# Modified on 2017-02-02 by Mike Petonic to:
+#   * Add a buffer of about 200M because "resize2fs -M" is a bit
+#     toooo aggressive and booting from the SD card left you
+#     with very little (0) space.  Can't even run bash...
+#   * Modernized the commands to fdisk to reflect current Linux version
+#     of fdisk
+#   * Prepended priveleged commands with sudo, because, well, lazy
+#
+#
+#
+IMG="$1"
+
+
+
+if [[ -e $IMG ]]; then
+    P_START=$( sudo fdisk -lu $IMG | grep Linux | awk '{print $2}' ) # Start of 2nd partition in 512 byte sectors
+    P_SIZE=$(( $( sudo fdisk -lu $IMG | grep Linux | awk '{print $3 }' ) * 1024 )) # Partition size in bytes
+    sudo losetup /dev/loop2 $IMG -o $(($P_START * 512)) --sizelimit $P_SIZE
+    sudo fsck -f /dev/loop2
+    PADDED_SIZE=$( sudo resize2fs -P /dev/loop2 2>/dev/null | grep '^Estimated' | awk -F : '{print $2 + 50000}' )
+    echo "PADDED_SIZE = $PADDED_SIZE"
+    sudo resize2fs /dev/loop2 $PADDED_SIZE # Make the filesystem as small as possible
+    sudo fsck -f /dev/loop2
+    P_NEWSIZE=$( sudo dumpe2fs /dev/loop2 2>/dev/null | grep '^Block count:' | awk '{print $3}' ) # In 4k blocks
+    #	T_NEWS=$(( $P_NEWSIZE + (100 * 254) ))  	# Add 100 Meg buffer
+    T_NEWS=$(( $P_NEWSIZE ))
+    P_NEWSIZE=$(( T_NEWS ))
+    P_NEWEND=$(( $P_START + ($P_NEWSIZE * 8) + 1 )) # in 512 byte sectors
+    sudo losetup -d /dev/loop2
+    echo -e "p\nd\n2\nn\np\n2\n$P_START\n$P_NEWEND\np\nw\n" | sudo fdisk $IMG
+    I_SIZE=$((($P_NEWEND + 1) * 512)) # New image size in bytes
+    sudo truncate -s $I_SIZE $IMG
+else
+    echo "Usage: $0 filename"
+fi
